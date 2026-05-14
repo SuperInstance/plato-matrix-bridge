@@ -143,24 +143,13 @@ class PlatoMatrixBridge:
             self._log(f"Save state error: {e}")
     
     def _get_or_create_plato_room(self, room_name):
-        """Check if PLATO room exists, create if not."""
+        """Check if PLATO room exists. On v2, just submit to create."""
         try:
-            req = urllib.request.Request(f"{self.plato}/room/{room_name}/history")
-            resp = urllib.request.urlopen(req, timeout=5)
+            req = urllib.request.Request(f"{self.plato}/room/{room_name}")
+            urllib.request.urlopen(req, timeout=5)
             return True
         except:
-            try:
-                payload = json.dumps({"question": "ROOM_INIT", "answer": f"ROOM {room_name} created by {self.agent}", "source": self.agent}).encode()
-                req = urllib.request.Request(
-                    f"{self.plato}/room/{room_name}/submit",
-                    data=payload,
-                    headers={"Content-Type": "application/json"}
-                )
-                urllib.request.urlopen(req, timeout=5)
-                self._log(f"{GREEN}Created PLATO room: {room_name}{RESET}")
-                return True
-            except:
-                return False
+            return True  # v2 auto-creates on submit
     
     def plato_room_to_matrix_room(self, plato_room):
         """Generate deterministic Matrix room alias from PLATO room name."""
@@ -197,38 +186,41 @@ class PlatoMatrixBridge:
     def sync_plato_to_matrix(self):
         """Check PLATO rooms for new tiles, post to Matrix."""
         try:
-            req = urllib.request.Request(f"{self.plato}/status")
-            resp = json.loads(urllib.request.urlopen(req, timeout=5).read())
-            rooms = resp.get("rooms", {})
+            # Use /health for room/tile counts
+            resp = json.loads(urllib.request.urlopen(
+                urllib.request.Request(f"{self.plato}/health"), timeout=5).read())
+            total_rooms = resp.get("rooms", 0)
+            total_tiles = resp.get("tiles", 0)
             
             for room_name in self.plato_rooms:
-                room_data = rooms.get(room_name, {})
-                tile_count = room_data.get("tile_count", 0) if isinstance(room_data, dict) else 0
+                try:
+                    resp2 = json.loads(urllib.request.urlopen(
+                        urllib.request.Request(f"{self.plato}/room/{room_name}"),
+                        timeout=5).read())
+                    tiles = resp2.get("tiles", [])
+                    tile_count = len(tiles)
+                except:
+                    tile_count = 0
+                    tiles = []
+                
                 last_known = self.plato_tile_states.get(room_name, 0)
                 
                 if tile_count > last_known and last_known > 0:
                     delta = tile_count - last_known
-                    # Fetch the new tiles
-                    try:
-                        req2 = urllib.request.Request(f"{self.plato}/room/{room_name}/history")
-                        resp2 = json.loads(urllib.request.urlopen(req2, timeout=5).read())
-                        tiles = resp2.get("tiles", [])
-                        new_tiles = tiles[-delta:] if len(tiles) >= delta else tiles
-                        
-                        matrix_room_id = self.ensure_matrix_room(room_name)
-                        if matrix_room_id:
-                            for t in new_tiles:
-                                q = t.get("question", "")
-                                a = t.get("answer", "")
-                                source = t.get("source", "?")
-                                msg = f"🧩 [{room_name}] {source} asked: {q}\n{a[:500]}"
-                                self._matrix_request("PUT",
-                                    f"/_matrix/client/v3/rooms/{urllib.parse.quote(matrix_room_id, safe='')}/send/m.room.message/{int(time.time()*1000)}",
-                                    {"msgtype": "m.text", "body": msg}
-                                )
-                            self._log(f"Synced {len(new_tiles)} new tiles to Matrix for {room_name}")
-                    except Exception as e:
-                        self._log(f"Error fetching new tiles for {room_name}: {e}")
+                    new_tiles = tiles[-delta:] if len(tiles) >= delta else tiles
+                    
+                    matrix_room_id = self.ensure_matrix_room(room_name)
+                    if matrix_room_id:
+                        for t in new_tiles:
+                            q = t.get("question", "")
+                            a = t.get("answer", "")
+                            source = t.get("source", "?")
+                            msg = f"🧩 [{room_name}] {source}: {q}\n{a[:500]}"
+                            self._matrix_request("PUT",
+                                f"/_matrix/client/v3/rooms/{urllib.parse.quote(matrix_room_id, safe='')}/send/m.room.message/{int(time.time()*1000)}",
+                                {"msgtype": "m.text", "body": msg}
+                            )
+                        self._log(f"Synced {len(new_tiles)} new tiles to Matrix for {room_name}")
                 
                 self.plato_tile_states[room_name] = tile_count
             
@@ -297,13 +289,15 @@ class PlatoMatrixBridge:
         """Post a Matrix message as a PLATO tile."""
         try:
             payload = json.dumps({
+                "room_id": plato_room,
+                "domain": plato_room,
                 "question": f"Matrix from {matrix_sender}",
-                "answer": body,
+                "answer": body[:2000],
                 "source": f"matrix-{matrix_sender.split(':')[0].lstrip('@')}",
                 "confidence": 0.9
             }).encode()
             req = urllib.request.Request(
-                f"{self.plato}/room/{plato_room}/submit",
+                f"{self.plato}/submit",
                 data=payload,
                 headers={"Content-Type": "application/json"}
             )
