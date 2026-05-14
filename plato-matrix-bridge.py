@@ -251,6 +251,7 @@ class PlatoMatrixBridge:
             if since:
                 params["since"] = since
             
+            params['timeout'] = 0  # non-blocking sync, no long-poll
             qs = urllib.parse.urlencode(params)
             sync_result = self._matrix_request("GET", f"/_matrix/client/v3/sync?{qs}")
             
