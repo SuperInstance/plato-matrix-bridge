@@ -278,6 +278,14 @@ class PlatoMatrixBridge:
                     if sender == self.user:
                         continue
                     
+                    # Skip echo — messages starting with 🧩 are our own PLATO sync
+                    if body.startswith("🧩"):
+                        continue
+                    
+                    # Skip empty messages
+                    if not body.strip():
+                        continue
+                    
                     # Post to PLATO
                     self.processed_events.add(eid)
                     self._post_to_plato(plato_room, sender, body)
