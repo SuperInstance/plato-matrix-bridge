@@ -1,0 +1,5 @@
+{
+  "name": "plato-matrix-bridge",
+  "version": "0.1.0",
+  "description": "Agent shell-module connecting local PLATO to fleet Matrix mesh. Channels + presence + ACL via Matrix rooms."
+}

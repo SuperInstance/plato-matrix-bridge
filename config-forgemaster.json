@@ -1,0 +1,11 @@
+{
+    "agent": "forgemaster",
+    "homeserver": "http://147.224.38.131:6167",
+    "matrix_user": "@forgemaster:147.224.38.131",
+    "matrix_password": "fleet-fm-2026",
+    "plato_url": "http://localhost:8847",
+    "plato_rooms": ["fleet-coord", "forge", "oracle1-forgemaster-bridge", "flux-engine"],
+    "presence_room": "!VKhbIyYhCOYbIvFPv4:147.224.38.131",
+    "poll_ms": 3000,
+    "log_file": "/tmp/plato-matrix-forgemaster.log"
+}
