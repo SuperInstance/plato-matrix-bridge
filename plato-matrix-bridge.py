@@ -131,7 +131,19 @@ class PlatoMatrixBridge:
                 self.plato_tile_states = state.get("tile_states", {})
                 self._log(f"Loaded state: {len(self.processed_events)} events, {len(self.plato_tile_states)} rooms")
         except:
-            self._log("No saved state, starting fresh")
+            # Fresh start — grab initial sync token to avoid replaying backlog
+            self._log("Fresh start — grabbing initial sync token...")
+            try:
+                sync_result = self._matrix_request("GET", "/_matrix/client/v3/sync?limit=0")
+                if "next_batch" in sync_result:
+                    for room_name in self.plato_rooms:
+                        alias = self.plato_room_to_matrix_room(room_name)
+                        result = self._matrix_request("GET", f"/_matrix/client/v3/directory/room/{urllib.parse.quote(alias, safe='')}")
+                        if "room_id" in result:
+                            self.since[result["room_id"]] = sync_result["next_batch"]
+                    self._log(f"Bootstrapped with since tokens for {len(self.since)} rooms")
+            except Exception as e:
+                self._log(f"Bootstrap sync failed: {e}")
     
     def _save_state(self):
         state_file = f"/tmp/plato-matrix-{self.agent}-state.json"
