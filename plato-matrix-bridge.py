@@ -55,6 +55,11 @@ class PlatoMatrixBridge:
         self.running = True
         self.status = "offline"
         
+        # Answering machine
+        self.inbox_path = config.get("inbox_path", os.path.expanduser("~/.openclaw/workspace/.inbox/state.json"))
+        self._unread_since_ack = 0
+        self._last_ack_check = 0
+        
         # Ensure login
         if not self.token:
             self._matrix_login()
@@ -209,6 +214,11 @@ class PlatoMatrixBridge:
                     delta = tile_count - last_known
                     new_tiles = tiles[-delta:] if len(tiles) >= delta else tiles
                     
+                    # CIRCUIT BREAKER: skip tiles we created (matrix-* source)
+                    # This prevents the feedback loop: PLATO→Matrix→PLATO→Matrix...
+                    own_prefix = f"matrix-{self.user.split(':')[0].lstrip('@')}"
+                    new_tiles = [t for t in new_tiles if not t.get("source", "").startswith("matrix-")]
+                    
                     matrix_room_id = self.ensure_matrix_room(room_name)
                     if matrix_room_id:
                         for t in new_tiles:
@@ -282,6 +292,9 @@ class PlatoMatrixBridge:
                     self.processed_events.add(eid)
                     self._post_to_plato(plato_room, sender, body)
                     self._log(f"{MAGENTA}←{RESET} {sender} → {plato_room}: {body[:80]}")
+                    
+                    # Update answering machine
+                    self._inbox_ring(plato_room, sender, body)
             
             self._save_state()
     
@@ -323,6 +336,72 @@ class PlatoMatrixBridge:
             {"msgtype": "m.text", "body": msg}
         )
     
+    # ── Answering Machine ─────────────────────────────────────
+    
+    def _inbox_load(self):
+        """Load inbox state from disk."""
+        try:
+            with open(self.inbox_path) as f:
+                return json.load(f)
+        except:
+            return {
+                "last_checked": time.time(),
+                "unread_count": 0,
+                "unread_rooms": {},
+                "pending": [],
+                "bridge_pid": os.getpid(),
+            }
+    
+    def _inbox_save(self, state):
+        """Save inbox state to disk."""
+        os.makedirs(os.path.dirname(self.inbox_path), exist_ok=True)
+        with open(self.inbox_path, "w") as f:
+            json.dump(state, f, indent=2)
+    
+    def _inbox_ring(self, room, sender, body):
+        """A new message arrived — ring the answering machine."""
+        state = self._inbox_load()
+        
+        now = time.time()
+        state["last_ring"] = now
+        state["unread_count"] = state.get("unread_count", 0) + 1
+        
+        # Per-room tracking
+        rooms = state.get("unread_rooms", {})
+        rooms[room] = rooms.get(room, 0) + 1
+        state["unread_rooms"] = rooms
+        
+        # Pending messages (keep last 50)
+        pending = state.get("pending", [])
+        pending.append({
+            "room": room,
+            "sender": sender,
+            "body": body[:200],
+            "timestamp": now,
+        })
+        state["pending"] = pending[-50:]
+        
+        # Bridge PID
+        state["bridge_pid"] = os.getpid()
+        
+        self._inbox_save(state)
+        
+        # Log the ring
+        self._log(f"{YELLOW}📬 INBOX RING: {sender} in {room} (total unread: {state['unread_count']}){RESET}")
+    
+    def _inbox_ack(self, room=None):
+        """Acknowledge messages — clear the blinker."""
+        state = self._inbox_load()
+        if room:
+            state.get("unread_rooms", {}).pop(room, None)
+        else:
+            state["unread_rooms"] = {}
+            state["pending"] = []
+        state["unread_count"] = sum(state.get("unread_rooms", {}).values())
+        state["last_ack"] = time.time()
+        self._inbox_save(state)
+        return state.get("unread_count", 0)
+    
     def run(self):
         """Main loop."""
         self.status = "online"
@@ -331,6 +410,7 @@ class PlatoMatrixBridge:
         
         last_plato_sync = 0
         last_presence = 0
+        last_inbox_report = 0
         
         while self.running:
             try:
@@ -347,6 +427,29 @@ class PlatoMatrixBridge:
                 if now - last_presence > 60:
                     self.broadcast_presence()
                     last_presence = now
+                
+                # Answering machine report (escalating interval)
+                inbox = self._inbox_load()
+                unread = inbox.get("unread_count", 0)
+                if unread > 0:
+                    last_ring = inbox.get("last_ring", now)
+                    age_s = now - last_ring
+                    # Escalation: 30s fresh → 60s → 120s → 300s → 600s stale
+                    if age_s < 60:
+                        report_interval = 30
+                    elif age_s < 300:
+                        report_interval = 60
+                    elif age_s < 600:
+                        report_interval = 120
+                    else:
+                        report_interval = 300
+                    
+                    if now - last_inbox_report > report_interval:
+                        pending = inbox.get("pending", [])[-5:]
+                        self._log(f"{YELLOW}📬 BLINKER: {unread} unread, last {age_s:.0f}s ago{RESET}")
+                        for p in pending:
+                            self._log(f"  {p['sender']} in {p['room']}: {p['body'][:60]}")
+                        last_inbox_report = now
                 
             except Exception as e:
                 self._log(f"{RED}Loop error: {e}{RESET}")
