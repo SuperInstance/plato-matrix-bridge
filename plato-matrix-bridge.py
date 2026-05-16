@@ -301,11 +301,15 @@ class PlatoMatrixBridge:
     def _post_to_plato(self, plato_room, matrix_sender, body):
         """Post a Matrix message as a PLATO tile."""
         try:
+            # Pad short answers to meet PLATO v2 minimum (20 chars)
+            answer = body[:2000]
+            if len(answer) < 20:
+                answer = answer + " " * (20 - len(answer))
             payload = json.dumps({
                 "room_id": plato_room,
                 "domain": plato_room,
                 "question": f"Matrix from {matrix_sender}",
-                "answer": body[:2000],
+                "answer": answer,
                 "source": f"matrix-{matrix_sender.split(':')[0].lstrip('@')}",
                 "confidence": 0.9
             }).encode()
